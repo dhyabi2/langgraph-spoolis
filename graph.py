@@ -10,6 +10,7 @@ from typing import Any, NotRequired, TypedDict
 from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
+from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import tool
 from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.graph import END, START, StateGraph
@@ -155,8 +156,28 @@ def payment_gate(state: GraphState) -> GraphState:
 
 
 @tool
-def pay(amount: str, asset: str) -> str:
-    """Print the exact amount that a payment adapter would receive."""
+def pay(amount: str, asset: str, config: RunnableConfig) -> str:
+    """Print the exact amount that a payment adapter would receive.
+
+    For the feeless Nano (XNO) rail this returns a spendable payment URI of the
+    form ``nano:<account>?amount=<raw>`` that a customer can open in any Nano
+    wallet to settle instantly with no network fee. For any other asset it keeps
+    the original WOULD-pay stub behaviour, because only XNO has a wired adapter.
+
+    The receiving ``nano_account`` is taken from ``config["configurable"]``
+    (live mode) or the ``NANO_ACCOUNT`` environment variable (a sandbox
+    placeholder by default), so a tenant controls the destination and no key is
+    ever required of the caller.
+    """
+    if asset == "XNO":
+        account = (
+            config["configurable"].get("nano_account")
+            or os.environ.get("NANO_ACCOUNT")
+            or "nano_1placeholderaccount0000000000000000000000000000000000"
+        )
+        amount_raw = int(Decimal(amount) * Decimal(10) ** 30)
+        return f"nano:{account}?amount={amount_raw}"
+
     # This example never moves money. A real adapter needs its own authorization policy.
     message = f"WOULD pay {amount} {asset}. No real money moved."
     print(message)
@@ -164,7 +185,11 @@ def pay(amount: str, asset: str) -> str:
 
 
 def pay_node(state: GraphState) -> GraphState:
-    message = pay.invoke({"amount": state["earned"], "asset": state["asset"]})
+    config = {"configurable": state.get("config", {})}
+    message = pay.invoke(
+        {"amount": state["earned"], "asset": state["asset"]},
+        config=config,
+    )
     return {"payment_message": message}
 
 
